@@ -1,0 +1,12 @@
+{
+  "autoApproval": {
+    "commands": [
+      "dotnet build",
+      "dotnet clean",
+      "dotnet restore",
+      "dotnet test",
+      "dotnet format"
+    ]
+  },
+  "theme": "dark"
+}

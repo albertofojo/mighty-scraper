@@ -1,0 +1,27 @@
+# .NET build artifacts
+bin/
+obj/
+*.user
+*.suo
+.vs/
+*.DotSettings.user
+
+# Auth profile — contains Google SSO session cookies, never commit
+auth/
+
+# Scraped output — personal/copyrighted course content
+output/
+
+# Diagnostic HTML dumps generated at runtime
+diagnose-*.html
+
+# Playwright
+**/playwright-report/
+**/test-results/
+
+# Claude Code local settings (permissions per-developer)
+.claude/settings.local.json
+
+# OS
+.DS_Store
+Thumbs.db
