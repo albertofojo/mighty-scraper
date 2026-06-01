@@ -9,7 +9,7 @@ public sealed class ScraperApp(
     IMarkdownConverter converter,
     ILogger<ScraperApp> logger)
 {
-    public async Task RunAsync(string courseUrl, int skipCount = 0, int delayMs = 3_000, CancellationToken cancellationToken = default)
+    public async Task RunAsync(string courseUrl, int skipCount = 0, int delayMs = 3_000, bool force = false, CancellationToken cancellationToken = default)
     {
         var outputDir = Path.Combine("output", SlugFromUrl(courseUrl));
         Directory.CreateDirectory(outputDir);
@@ -40,10 +40,26 @@ public sealed class ScraperApp(
                 l => l.Href,
                 l => converter.GetFilename(new LessonContent(l.Title, "", l.Order, "")));
 
-        var toScrape = skipCount > 0 ? structure.Skip(skipCount).ToList() : structure;
+        var afterSkip = (skipCount > 0 ? structure.Skip(skipCount) : structure).ToList();
 
         if (skipCount > 0)
             logger.LogInformation("Skipping first {Skip} lessons — resuming from lesson {From}", skipCount, skipCount + 1);
+
+        // Incremental by default: only scrape lessons whose .md isn't already on disk (--force redoes all).
+        List<LessonMeta> toScrape;
+        if (force)
+        {
+            toScrape = afterSkip;
+        }
+        else
+        {
+            toScrape = afterSkip
+                .Where(l => !File.Exists(Path.Combine(outputDir, converter.GetFilename(new LessonContent(l.Title, "", l.Order, "")))))
+                .ToList();
+            var alreadyHave = afterSkip.Count - toScrape.Count;
+            if (alreadyHave > 0)
+                logger.LogInformation("Incremental: {Have} lesson(s) already have a .md (skipped) — pass --force to re-scrape them", alreadyHave);
+        }
 
         logger.LogInformation(
             "Structure ready ({Count} lessons, {Remaining} to scrape) — starting progressive save...",
@@ -107,10 +123,15 @@ public sealed class ScraperApp(
         }
 
         totalWatch.Stop();
+
+        // Course entry point: a navigable index of every lesson .md, grouped by module.
+        var indexPath = CourseIndex.Write(structure, converter, outputDir);
+
         logger.LogInformation(
             "Scrape finished — {Saved} saved, {Skipped} skipped, {Elapsed:F1}s total",
             saved, skipped, totalWatch.Elapsed.TotalSeconds);
         logger.LogInformation("  Output : {Dir}", Path.GetFullPath(outputDir));
+        logger.LogInformation("  Index  : {Idx}", Path.GetFullPath(indexPath));
     }
 
     // ── Private helpers ─────────────────────────────────────────────────────────

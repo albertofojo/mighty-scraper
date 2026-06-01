@@ -22,7 +22,7 @@ public sealed class CourseNavigator(
         var page = await playwrightManager.GetAuthenticatedPageAsync();
 
         await page.GotoAsync(courseUrl);
-        await page.WaitForLoadStateAsync(LoadState.NetworkIdle);
+        await page.WaitForLoadStateAsync(LoadState.DOMContentLoaded);
 
         var landedUrl = page.Url;
         logger.LogInformation("Landed at: {Url}", landedUrl);

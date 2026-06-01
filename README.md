@@ -2,7 +2,7 @@
 
 Herramienta de consola en **C# / .NET 9** que descarga el contenido de un curso alojado en una plataforma **Mighty Networks** (SPA basada en React) y lo exporta como ficheros **Markdown** estructurados, navegables entre sí mediante enlaces cruzados.
 
-Está pensada para cursos privados a los que se accede mediante **Google SSO** (por ejemplo `https://training.lidr.co`). El login **no se automatiza**: se hace una sola vez de forma manual mediante un *helper*, y a partir de ahí el scraper reutiliza el perfil persistente del navegador.
+Está pensada para cursos privados a los que se accede mediante **login con usuario y contraseña** (por ejemplo `https://training.lidr.co`). El login **no se automatiza**: se hace una sola vez de forma manual mediante un *helper*, y a partir de ahí el scraper reutiliza el perfil persistente del navegador.
 
 ---
 
@@ -11,6 +11,7 @@ Está pensada para cursos privados a los que se accede mediante **Google SSO** (
 - [Requisitos](#requisitos)
 - [Instalación](#instalación)
 - [Uso](#uso)
+- [Descarga de vídeos y transcripciones](#descarga-de-vídeos-y-transcripciones)
 - [Estructura del proyecto](#estructura-del-proyecto)
 - [Cómo funciona (arquitectura)](#cómo-funciona-arquitectura)
 - [Autenticación](#autenticación)
@@ -37,7 +38,9 @@ Mighty Networks renderiza todo el contenido del curso en cliente, lo que hace qu
 | **.NET SDK** | 9.0 o superior |
 | **Microsoft.Playwright** | 1.59.0 (NuGet, se resuelve con `dotnet restore`) |
 | **Navegadores Playwright** | Chromium (se instala con un comando, ver abajo) |
-| **Google Chrome instalado** | Recomendado — el `LoginHelper` lo usa por defecto para máxima compatibilidad con Google SSO. Si no está, cae al Chromium bundled |
+| **Google Chrome instalado** | Recomendado — tanto el `LoginHelper` como el scraper lo usan por defecto (`Channel = "chrome"`) para superar el reto de Cloudflare. Si no está, ambos caen al Chromium bundled |
+| **yt-dlp** | Solo para `--download-media`. `pip install -U yt-dlp` (o `winget install yt-dlp.yt-dlp`). El scraper lo invoca por PATH o, si no está, como `python -m yt_dlp` |
+| **ffmpeg** | Solo para descargar **vídeo** (fusiona los segmentos HLS en MP4). `winget install Gyan.FFmpeg`. No hace falta para `--download-media subs` |
 | **Sistema operativo** | Windows / macOS / Linux |
 
 Dependencias NuGet principales:
@@ -71,9 +74,9 @@ Dependencias NuGet principales:
 
 4. **Autenticarse** (paso obligatorio antes del primer scrape):
    ```powershell
-   dotnet run --project tools/LoginHelper -- https://training.lidr.co
+   dotnet run --project tools/LoginHelper -- https://training.lidr.co/spaces/21956761-content
    ```
-   Se abrirá una ventana del navegador. Completa el login de Google manualmente, navega hasta que veas el curso, vuelve a la consola y pulsa **ENTER**. Esto creará la carpeta `auth/` con el perfil persistente y un `state.json`.
+   Se abrirá una ventana del navegador. Introduce tu **usuario y contraseña** manualmente, navega hasta que veas el curso, vuelve a la consola y pulsa **ENTER**. Esto creará la carpeta `auth/` con el perfil persistente y un `state.json`.
 
 ---
 
@@ -82,37 +85,134 @@ Dependencias NuGet principales:
 Desde la raíz del repositorio:
 
 ```powershell
-dotnet run --project src -- <course-url> [--skip N] [--delay MS]
+dotnet run --project src -- <course-url> [--skip N] [--delay MS] [--force] [--check] [--diagnose-media [N]] [--download-media [both|video|subs]] [--limit N]
 ```
+
+La herramienta tiene **cuatro modos**, según los flags:
+
+- **Scrape** (por defecto, sin flags de medios): descarga el contenido de cada lección a `.md` y genera `index.md`. Es **incremental**: salta las lecciones cuyo `.md` ya existe (usa `--force` para rehacerlas).
+- **Check** (`--check`): informe de estado **de solo lectura** — compara el curso online con lo que tienes en disco (qué `.md`, vídeos y subtítulos faltan, lecciones nuevas, huérfanos). No descarga nada.
+- **Diagnóstico de medios** (`--diagnose-media`): inspecciona qué exponen los reproductores de vídeo (streams de descarga + subtítulos). No descarga nada.
+- **Descarga de medios** (`--download-media`): descarga vídeos y/o subtítulos vía `yt-dlp`, enriquece los `.md` con los enlaces locales y reescribe `index.md`. Es **reanudable** (no re-descarga lo ya bajado).
 
 ### Parámetros de CLI
 
 | Argumento | Tipo | Por defecto | Descripción |
 |---|---|---|---|
-| `<course-url>` | posicional, **obligatorio** | — | URL completa del curso (ej. `https://training.lidr.co/spaces/21956761-content`). Es el primer argumento posicional. |
-| `--skip N` | entero | `0` | Salta las primeras `N` lecciones de la estructura descubierta. Útil para reanudar un scrape interrumpido sin volver a descargar lo que ya tienes. |
-| `--delay MS` | entero | `3000` | Pausa en milisegundos entre lección y lección para no saturar el servidor. Hay un retraso inicial cero (la primera lección se descarga inmediatamente). |
+| `<course-url>` | posicional, **obligatorio** | — | URL completa del curso (ej. `https://training.lidr.co/spaces/21956761/content`). Es el primer argumento posicional. |
+| `--skip N` | entero | `0` | Salta las primeras `N` lecciones. Útil para empezar la descarga de medios más adelante (para reanudar el scrape ya no hace falta: es incremental). |
+| `--delay MS` | entero | `3000` | Pausa en ms entre lección y lección durante el **scrape** (la primera lección no espera). |
+| `--force` | flag | (off) | En el **scrape**, re-genera también las lecciones cuyo `.md` ya existe (por defecto se saltan). |
+| `--check` | flag | (off) | Activa el **modo check**: informe de estado curso-vs-disco. No scrapea ni descarga. |
+| `--diagnose-media [N]` | flag + entero opcional | `5` | Activa el **modo diagnóstico**. Recorre lecciones hasta encontrar `N` con vídeo y reporta proveedor, id, hash, streams (MP4/HLS/DASH/DRM) y subtítulos. Escribe `output/<slug>/_media-diagnostic.json`. |
+| `--download-media [modo]` | flag + valor opcional | `both` | Activa el **modo descarga**. `both` = vídeo + subtítulos, `video` = solo MP4, `subs` = solo `.vtt` (no requiere ffmpeg). |
+| `--limit N` | entero | `0` (sin límite) | En modo descarga, descarga como máximo `N` vídeos. Pensado para pruebas (`--limit 1`). |
 
 ### Ejemplos
 
-Scrape completo:
+Scrape completo (genera `.md` + `index.md`):
 ```powershell
-dotnet run --project src -- https://training.lidr.co/spaces/21956761-content
+dotnet run --project src -- https://training.lidr.co/spaces/21956761/content
 ```
 
-Reanudar a partir de la lección 51 con una pausa de 5 segundos:
+Reanudar el scrape a partir de la lección 51 con una pausa de 5 segundos:
 ```powershell
-dotnet run --project src -- https://training.lidr.co/spaces/21956761-content --skip 50 --delay 5000
+dotnet run --project src -- https://training.lidr.co/spaces/21956761/content --skip 50 --delay 5000
 ```
 
-Scrape agresivo (sin pausa) para una prueba rápida en local:
+Diagnosticar los vídeos (sin descargar) de las primeras 5 lecciones con vídeo:
 ```powershell
-dotnet run --project src -- https://training.lidr.co/spaces/21956761-content --delay 0
+dotnet run --project src -- https://training.lidr.co/spaces/21956761/content --diagnose-media 5
 ```
+
+Probar la descarga con 1 solo vídeo (+ su transcripción):
+```powershell
+dotnet run --project src -- https://training.lidr.co/spaces/21956761/content --download-media both --limit 1
+```
+
+Descargar todos los vídeos + subtítulos del curso:
+```powershell
+dotnet run --project src -- https://training.lidr.co/spaces/21956761/content --download-media both
+```
+
+Comprobar si tienes el curso al día (sin descargar nada):
+```powershell
+dotnet run --project src -- https://training.lidr.co/spaces/21956761/content --check
+```
+
+### Mantener el curso actualizado
+
+Los modos son **idempotentes**, así que el mismo par de comandos sirve tanto para un curso desde cero como para completar lo que falta:
+
+| Quiero… | Comando(s) |
+|---|---|
+| **Descargar el curso completo** (md + vídeos + subtítulos) | `… <url>` &nbsp;→&nbsp; `… <url> --download-media both` |
+| **Descargar solo lo que resta** (módulos pendientes) | Los **mismos** comandos: el scrape salta los `.md` que ya tienes y la descarga salta los vídeos ya bajados. |
+| **Comprobar que estoy al día** | `… <url> --check` |
+| **Rehacer todo desde cero** | `… <url> --force` (re-scrapea) y borrar `media/` antes de `--download-media`. |
+
+> El scrape es incremental (salta `.md` existentes) y la descarga es reanudable (`_archive.txt`). Por eso "descargar lo que resta" = volver a lanzar los mismos comandos.
 
 ### Salida
 
-El resultado se guarda en `output/<slug-de-la-url>/`, donde `<slug>` se deriva sanitizando los segmentos de la URL del curso. Ejemplo: `https://training.lidr.co/spaces/21956761-content` produce `output/spaces-21956761-content/`.
+El resultado se guarda en `output/<slug-de-la-url>/`, donde `<slug>` se deriva sanitizando los segmentos de la URL del curso. Ejemplo: `https://training.lidr.co/spaces/21956761/content` produce `output/spaces-21956761-content/`, con:
+
+- `NN-Titulo.md` — una lección por fichero.
+- `index.md` — **puerta de entrada**: índice navegable de todas las lecciones agrupadas por módulo.
+- `media/` — vídeos `NN-Titulo-<id>.mp4` y transcripciones `NN-Titulo-<id>.es.vtt` (solo si usas `--download-media`).
+- `_media-diagnostic.json` — informe del modo diagnóstico (solo si usas `--diagnose-media`).
+
+---
+
+## Descarga de vídeos y transcripciones
+
+El curso aloja sus vídeos en **Vimeo** (privados, restringidos por dominio, sin DRM), servidos como **HLS/DASH adaptativo**. El flag `--download-media` los descarga reutilizando la sesión autenticada para obtener el `hash` privado de cada vídeo (que los `.md` ya no conservan) y delega en `yt-dlp` + `ffmpeg`.
+
+### Requisitos previos
+
+```powershell
+pip install -U yt-dlp          # imprescindible
+winget install Gyan.FFmpeg     # solo si quieres el vídeo (no para 'subs')
+```
+
+### Flujo recomendado (dos pasos)
+
+No hay un único comando que haga *scrape + descarga*; son dos fases (el scrape crea los `.md`, la descarga los **enriquece**):
+
+```powershell
+# 1) Scrape: genera los .md + index.md
+dotnet run --project src -- <course-url>
+
+# 2) Descarga: vídeos + subtítulos, enriquece los .md y reescribe index.md
+dotnet run --project src -- <course-url> --download-media both
+```
+
+> El orden importa: la descarga inserta los enlaces locales en los `.md` que produjo el scrape. Si los `.md` no existen, los vídeos se descargan igual pero no se enriquece nada.
+
+### Qué hace exactamente
+
+1. **Descarga** (`MediaDownloader`): por cada lección navega, extrae los embeds de Vimeo (id + hash) y llama a `yt-dlp` con `--referer <lección>`:
+   * **Vídeo** → HLS fusionado a MP4 (`--merge-output-format mp4`), **reanudable** con `--download-archive` (si lo interrumpes, al relanzar no re-descarga lo ya hecho).
+   * **Subtítulos** → `.vtt` en español/inglés donde el creador los haya subido (transcripción **gratis**).
+   * Ficheros nombrados **alineados con el `.md`**: `NN-Titulo-<id>.mp4` y `NN-Titulo-<id>.es.vtt`.
+2. **Enriquecido del `.md`**: sustituye el enlace online-solo del vídeo por una línea con **ambos** destinos — el enlace online funcional (con el hash restaurado, `vimeo.com/{id}/{hash}`) y los ficheros locales:
+   ```markdown
+   🎬 **Vídeo:** [▶️ Ver online](<https://vimeo.com/675812999/2366a806fc>) · [⬇️ MP4](<media/03-Expectativas-675812999.mp4>) · [📝 Transcripción (es)](<media/03-Expectativas-675812999.es.vtt>)
+   ```
+   Es **idempotente** (marcador `<!-- media:{id} -->`): re-ejecutar no duplica enlaces.
+3. **`index.md`**: se regenera como índice navegable de todas las lecciones agrupadas por módulo.
+
+### Modos y pruebas
+
+| Comando | Efecto |
+|---|---|
+| `--download-media both` | Vídeo + subtítulos (requiere ffmpeg) |
+| `--download-media video` | Solo MP4 |
+| `--download-media subs` | Solo `.vtt` (no requiere ffmpeg — ideal para validar el flujo) |
+| `--download-media both --limit 1` | Solo el primer vídeo (prueba rápida) |
+| `--download-media both --skip 50` | Empieza en la lección 51 |
+
+> **Coste real**: el software es gratis; el vídeo ocupa disco (estimado ~15-40 GB para el curso completo) y tiempo. La transcripción `.vtt` es ligera (KB) y depende de que el creador haya subido subtítulos.
 
 ---
 
@@ -125,15 +225,21 @@ mighty-scrapper/
 │   ├── MightyScraper.csproj        # net9.0, refs a Playwright + ReverseMarkdown + Hosting
 │   ├── Core/                       # Lógica de negocio
 │   │   ├── IPlaywrightManager.cs   # Contrato: obtener una IPage autenticada
-│   │   ├── PlaywrightManager.cs    # Lanza Chromium headless con perfil persistente desde ./auth
+│   │   ├── PlaywrightManager.cs    # Lanza Chrome (headed) con perfil persistente desde ./auth
 │   │   ├── ICourseNavigator.cs     # Contrato: GetStructureAsync + ScrapeAsync
 │   │   ├── CourseNavigator.cs      # Descubre el sidebar y extrae HTML por lección
 │   │   ├── IMarkdownConverter.cs   # Contrato: convertir + guardar markdown
 │   │   ├── MarkdownConverter.cs    # HTML → Markdown, limpieza, nombrado de ficheros
-│   │   └── ScraperApp.cs           # Orquestador: pipeline de discovery → scrape → save
+│   │   ├── ScraperApp.cs           # Orquestador: pipeline de discovery → scrape → save
+│   │   ├── EmbedExtractor.cs       # Extrae embeds de vídeo (Vimeo/YouTube/Loom) + hash de los iframes
+│   │   ├── MediaDiagnostic.cs      # Modo --diagnose-media: inspecciona streams + subtítulos
+│   │   ├── MediaDownloader.cs      # Modo --download-media: yt-dlp + enriquecido de .md
+│   │   ├── CourseIndex.cs          # Genera index.md (índice de lecciones por módulo)
+│   │   └── CourseStatus.cs         # Modo --check: informe de estado curso-vs-disco
 │   └── Models/                     # Records inmutables (DTOs)
 │       ├── LessonMeta.cs           # Metadatos (href, título, orden, parentHref, isSection)
 │       ├── LessonContent.cs        # LessonMeta + RawHtml extraído
+│       ├── MediaEmbed.cs           # Embed de vídeo (proveedor, id, hash, url)
 │       ├── CourseLesson.cs         # Modelo agregado opcional (legacy)
 │       ├── CourseSection.cs        # Modelo agregado opcional (legacy)
 │       └── CourseStructure.cs      # Modelo agregado opcional (legacy)
@@ -149,11 +255,14 @@ mighty-scrapper/
 │       └── MightyScraper.Tests.csproj
 │
 ├── auth/                           # (Generado por LoginHelper — IGNORAR en git)
-│   ├── Default/                    # Perfil persistente de Chromium con cookies de Google
+│   ├── Default/                    # Perfil persistente de Chromium con las cookies de sesión
 │   └── state.json                  # Snapshot de cookies/localStorage (fallback)
 │
 ├── output/                         # (Generado por el scraper)
-│   └── <slug>/                     # Una carpeta por curso, con NN-titulo.md
+│   └── <slug>/                     # Una carpeta por curso
+│       ├── NN-titulo.md            #   Una lección por fichero
+│       ├── index.md                #   Puerta de entrada: índice por módulos
+│       └── media/                  #   Vídeos .mp4 + transcripciones .vtt (--download-media)
 │
 ├── .claude/                        # Configuración local de Claude Code (skills, reglas)
 │   ├── rules/scraping-guidelines.md
@@ -172,7 +281,7 @@ El pipeline está dividido en **dos fases**, ambas orquestadas por `ScraperApp.R
 
 ### Fase 1 — Discovery (una sola carga de página)
 
-`ICourseNavigator.GetStructureAsync(courseUrl)` abre la URL del curso, espera a `NetworkIdle` y ejecuta un fragmento JavaScript en la página (`Page.EvaluateAsync`) que recorre el sidebar (`li.menu-list-item-container`) y devuelve la lista plana de lecciones con sus metadatos:
+`ICourseNavigator.GetStructureAsync(courseUrl)` abre la URL del curso, espera a `DOMContentLoaded` y ejecuta un fragmento JavaScript en la página (`Page.EvaluateAsync`) que recorre el sidebar (`li.menu-list-item-container`) y devuelve la lista plana de lecciones con sus metadatos:
 
 - `Href` — URL absoluta de la lección.
 - `Title` — texto del enlace.
@@ -217,28 +326,50 @@ El guardado es **progresivo**: si el proceso se interrumpe a mitad, todos los fi
 
 ## Autenticación
 
-> **Crítico:** la plataforma usa Google SSO. **No se intenta automatizar el login**, porque las protecciones anti-bot de Google bloquean Playwright.
+> **Crítico:** el login se hace con **usuario y contraseña** en la propia plataforma. **No se automatiza** el formulario: lo completas tú a mano una sola vez y el scraper reutiliza la sesión guardada.
 
 ### Cómo se gestiona
 
 - `tools/LoginHelper/Program.cs` abre Chromium **headed** con `LaunchPersistentContextAsync` apuntando a `./auth/`.
-- Intenta usar el canal `chrome` (Google Chrome del sistema, mejor compatibilidad con SSO). Si no hay Chrome instalado, cae al Chromium bundled.
+- Intenta usar el canal `chrome` (Google Chrome del sistema, mejor compatibilidad). Si no hay Chrome instalado, cae al Chromium bundled.
 - Pasa los flags `--disable-blink-features=AutomationControlled` e `IgnoreDefaultArgs=["--enable-automation"]` para esconder los indicadores típicos de automatización.
-- El usuario hace login a mano y pulsa ENTER. El profile (cookies + IndexedDB + service workers + localStorage) queda persistido en `./auth/Default/`. Además se exporta `state.json` como fallback de cookies.
-- `PlaywrightManager` reutiliza ese mismo directorio en modo **headless** para todas las ejecuciones siguientes.
+- El usuario introduce sus credenciales a mano y pulsa ENTER. El profile (cookies + IndexedDB + service workers + localStorage) queda persistido en `./auth/Default/`. Además se exporta `state.json` como fallback de cookies.
+- `PlaywrightManager` reutiliza ese mismo directorio para todas las ejecuciones siguientes, lanzando **Chrome del sistema (`Channel = "chrome"`) en modo headed**. Si no hay Chrome instalado, cae al Chromium bundled (también headed).
 
-### Si la sesión expira
+### Cloudflare ("Just a moment...")
 
-El scraper detecta una redirección a `/sign_in`, `/login`, o a un dominio distinto del esperado y aborta con:
+La plataforma está detrás de **Cloudflare**. Su cookie de validación (`cf_clearance`) va ligada al *fingerprint* exacto del navegador que superó el reto: el **User-Agent** del Chrome del sistema y el hecho de correr en **modo headed**. Por eso el scraper **no** corre headless ni con el Chromium bundled por defecto: si lo hiciera, el User-Agent no coincidiría (`HeadlessChrome`), Cloudflare rechazaría la cookie y volvería a mostrar la pantalla *"Just a moment..."*, que el bot no puede resolver.
 
+Consecuencias prácticas:
+
+- Durante el scrape **se abre una ventana de Chrome visible**. Déjala trabajar de fondo; no la cierres.
+- Si en los logs ves `Page title : Just a moment...` y el error `Sidebar selector ... not found`, es que Cloudflare bloqueó la sesión. Vuelve a pasar el `LoginHelper` para refrescar la validación y reintenta.
+
+### Re-autenticarse (sesión expirada)
+
+Las sesiones caducan con el tiempo. Síntomas típicos de sesión expirada:
+
+- El scraper aborta con un mensaje de `Session expired — redirected to '<url>'` al detectar una redirección a `/sign_in`, `/login` o a un dominio distinto del esperado.
+- La **fase de descubrimiento** (`GetStructureAsync`) se cuelga: en lugar del curso se carga la pantalla de login y la espera del sidebar agota su tiempo.
+
+Para regenerar la sesión, vuelve a ejecutar el `LoginHelper` con la URL del curso:
+
+```powershell
+dotnet run --project tools/LoginHelper -- https://training.lidr.co/spaces/21956761-content
 ```
-Session expired — redirected to '<url>'.
-Run the login helper again: dotnet run --project tools/LoginHelper -- <url>
+
+1. Se abre una ventana de Chrome.
+2. Introduce tu **usuario y contraseña** y completa el login.
+3. Espera a ver el contenido del curso cargado.
+4. Vuelve a la consola y pulsa **ENTER**.
+
+Esto refresca el perfil persistente en `./auth/` y reescribe `auth/state.json`. Después puedes reanudar el scrape donde lo dejaste con `--skip <N>`:
+
+```powershell
+dotnet run --project src -- https://training.lidr.co/spaces/21956761-content --skip 141 --delay 3000
 ```
 
-Ejecuta de nuevo `LoginHelper` con la misma URL base y vuelve a iniciar sesión.
-
-> El directorio `auth/` contiene cookies de tu cuenta de Google personal. **Nunca lo subas a git.**
+> El directorio `auth/` contiene las cookies de tu sesión personal. **Nunca lo subas a git.**
 
 ---
 
