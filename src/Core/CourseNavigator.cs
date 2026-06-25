@@ -11,6 +11,8 @@ public sealed class CourseNavigator(
 {
     private const string SidebarSelector    = "a[class*='coursework-mighty-menu-list-item']";
     private const string ContentSelector    = ".detail-layout-description";
+    // The React sidebar renders progressively; large courses (180+ lessons) can take well over 8 s to paint.
+    private const int    SidebarTimeoutMs   = 30_000;
     // Polite delay between lesson requests — prevents rate-limiting after ~90 rapid hits
 
     // ── ICourseNavigator ─────────────────────────────────────────────────────────
@@ -74,13 +76,13 @@ public sealed class CourseNavigator(
     {
         try
         {
-            await page.Locator(SidebarSelector).First.WaitForAsync(new() { Timeout = 8_000 });
+            await page.Locator(SidebarSelector).First.WaitForAsync(new() { Timeout = SidebarTimeoutMs });
         }
         catch (Exception)
         {
             await LogDomDiagnosticAsync(page);
             throw new InvalidOperationException(
-                $"Sidebar selector '{SidebarSelector}' not found after 8 s. " +
+                $"Sidebar selector '{SidebarSelector}' not found after {SidebarTimeoutMs / 1000} s. " +
                 "Check the log output above for candidate selectors, " +
                 "then update SidebarSelector in CourseNavigator.cs.");
         }
@@ -145,6 +147,31 @@ public sealed class CourseNavigator(
             if (count > 0)
                 logger.LogWarning("  {Count,3} matches → {Sel}", count, sel);
         }
+
+        // Dump the real structure of a few sidebar items so we can fix the selector precisely.
+        var menuSample = await page.EvaluateAsync<string[]>("""
+            () => {
+                const out = [];
+                const containers = document.querySelectorAll('li.menu-list-item-container');
+                out.push('li.menu-list-item-container count: ' + containers.length);
+                let shown = 0;
+                for (const li of containers) {
+                    if (shown >= 4) break;
+                    const a = li.querySelector('a');
+                    out.push('--- item ---');
+                    out.push('li.class = ' + li.className);
+                    out.push('anchor   = ' + (a ? (a.tagName + ' | class=' + a.className + ' | href=' + (a.getAttribute('href') || '(none)')) : 'NO <a> INSIDE'));
+                    out.push('html     = ' + li.outerHTML.replace(/\s+/g, ' ').slice(0, 500));
+                    shown++;
+                }
+                const token = document.querySelector("[class*='coursework-mighty-menu-list-item']");
+                out.push("first [class*='coursework-mighty-menu-list-item'] = " + (token ? token.tagName + ' | class=' + token.className : 'NONE'));
+                return out;
+            }
+            """);
+        logger.LogWarning("Sidebar item structure sample:");
+        foreach (var line in menuSample)
+            logger.LogWarning("  {Line}", line);
 
         logger.LogWarning("=== end of DOM diagnostic ===");
     }
