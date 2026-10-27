@@ -84,6 +84,19 @@ public class MarkdownConverterTests
         Assert.Equal("34-🎥-Caso-práctico.md", filename);
     }
 
+    [Fact]
+    public void GetFilename_WithBoxDrawingDashBeforeTime_StripsTimeSuffix()
+    {
+        // Arrange — newer modules use U+2500 "─" instead of an em dash
+        var content = new LessonContent("1️⃣ Comunicación efectiva ─ 151 min", "", 198, "");
+
+        // Act
+        var filename = _converter.GetFilename(content);
+
+        // Assert
+        Assert.Equal("199-1️⃣-Comunicación-efectiva.md", filename);
+    }
+
     // ---------------------------------------------------------------------------
     // 5. SaveAsync — header (module breadcrumb) and footer (children list) are
     //    written to the file around the converted markdown body

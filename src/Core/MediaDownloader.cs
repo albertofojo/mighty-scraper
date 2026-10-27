@@ -47,7 +47,8 @@ public sealed class MediaDownloader(
 
         var structure = await navigator.GetStructureAsync(courseUrl, ct);
         var lessons = structure
-            .Where(l => !l.IsSection && !string.IsNullOrEmpty(l.Href))
+            // Sections can embed videos too, and keeping them aligns --skip with the NN- file numbering.
+            .Where(l => !string.IsNullOrEmpty(l.Href))
             .Skip(skipCount)
             .ToList();
 

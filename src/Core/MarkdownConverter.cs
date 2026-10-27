@@ -7,9 +7,9 @@ namespace MightyScraper.Core;
 
 public sealed class MarkdownConverter : IMarkdownConverter
 {
-    // Strips trailing status circles + time estimate: "🟢 — 53 min", "🔴 — 5 min", "— 32 min"
+    // Strips trailing status circles + time estimate: "🟢 — 53 min", "🔴 — 5 min", "— 32 min", "─ 151 min"
     private static readonly Regex TrailingTimeAndStatusRegex = new(
-        @"\s*(🟢|🔴|🟡)*\s*[—–]\s*\d+\s*min\s*$",
+        @"\s*(🟢|🔴|🟡)*\s*[—–─]\s*\d+\s*min\s*$",
         RegexOptions.Compiled);
     // XPath expressions for UI chrome that must be stripped before conversion
     private static readonly string[] UnwantedXPaths =
